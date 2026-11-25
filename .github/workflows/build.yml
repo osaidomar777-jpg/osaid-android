@@ -22,6 +22,8 @@ jobs:
 
       - name: إعداد Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools'
 
       - name: إعداد Gradle 8.7
         uses: gradle/actions/setup-gradle@v4
