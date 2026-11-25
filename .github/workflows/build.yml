@@ -1,0 +1,46 @@
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: تنزيل ملفات المشروع
+        uses: actions/checkout@v4
+
+      - name: إعداد Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: إعداد Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: إعداد Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+          validate-wrappers: false
+
+      - name: بناء تطبيق الأندرويد APK
+        run: gradle assembleDebug --no-daemon --stacktrace
+
+      - name: تجهيز ملف APK النهائي
+        run: |
+          mkdir -p dist
+          cp app/build/outputs/apk/debug/app-debug.apk dist/OsaidFile-Android.apk
+          ls -lh dist/OsaidFile-Android.apk
+
+      - name: رفع ملف APK للتحميل
+        uses: actions/upload-artifact@v4
+        with:
+          name: OsaidFile-Android-APK
+          path: dist/OsaidFile-Android.apk
+          retention-days: 30

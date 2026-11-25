@@ -1,0 +1,9 @@
+<resources>
+    <style name="Theme.OsaidFile" parent="android:Theme.Material.NoActionBar">
+        <item name="android:statusBarColor">#FF080D17</item>
+        <item name="android:navigationBarColor">#FF080D17</item>
+        <item name="android:windowBackground">@color/app_bg</item>
+    </style>
+
+    <color name="app_bg">#FF080D17</color>
+</resources>
