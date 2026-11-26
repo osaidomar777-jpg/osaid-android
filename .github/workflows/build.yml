@@ -28,10 +28,34 @@ jobs:
           channel: 'stable'
           cache: true
 
-      - name: تهيئة مشروع Flutter نظيف
+      - name: تهيئة مشروع Flutter نظيف ودمج محرك أسيد والصلاحيات
         run: |
           rm -rf android ios
           flutter create . --project-name osaid_file --org com.osaid.file
+          cp android_bridge/AndroidManifest.xml android/app/src/main/AndroidManifest.xml
+          mkdir -p android/app/src/main/kotlin/com/osaid/file
+          cp android_bridge/MainActivity.kt android/app/src/main/kotlin/com/osaid/file/MainActivity.kt
+          if [ -f android/app/build.gradle.kts ]; then
+            cat << 'EOF' >> android/app/build.gradle.kts
+
+          dependencies {
+              val ytDlVersion = "0.18.1"
+              implementation("io.github.junkfood02.youtubedl-android:library:$ytDlVersion")
+              implementation("io.github.junkfood02.youtubedl-android:ffmpeg:$ytDlVersion")
+              implementation("io.github.junkfood02.youtubedl-android:aria2c:$ytDlVersion")
+          }
+          EOF
+          else
+            cat << 'EOF' >> android/app/build.gradle
+
+          dependencies {
+              def ytDlVersion = "0.18.1"
+              implementation "io.github.junkfood02.youtubedl-android:library:$ytDlVersion"
+              implementation "io.github.junkfood02.youtubedl-android:ffmpeg:$ytDlVersion"
+              implementation "io.github.junkfood02.youtubedl-android:aria2c:$ytDlVersion"
+          }
+          EOF
+          fi
 
       - name: تثبيت الحزم
         run: flutter pub get
