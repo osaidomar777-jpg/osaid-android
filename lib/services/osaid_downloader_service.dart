@@ -88,6 +88,15 @@ class OsaidDownloaderService {
     return trimmed.startsWith('http://') || trimmed.startsWith('https://');
   }
 
+  Future<Map<String, dynamic>> getEngineInfo() async {
+    try {
+      final res = await _channel.invokeMethod<Map<dynamic, dynamic>>('engineInfo');
+      return Map<String, dynamic>.from(res ?? {'ready': false, 'version': 'غير معروف'});
+    } catch (e) {
+      return {'ready': false, 'version': e.toString()};
+    }
+  }
+
   /// بحث فوري عن الأغاني والفيديوهات بالاسم (مثل تطبيق طرب)
   Future<List<OsaidSearchResult>> search(String query) async {
     final results = await _yt.search.search(query);
@@ -131,21 +140,7 @@ class OsaidDownloaderService {
     }
   }
 
-  Future<Directory> _getDownloadDir() async {
-    if (Platform.isAndroid) {
-      final dir = Directory('/storage/emulated/0/Download/OsaidFile/Downloads');
-      try {
-        if (!await dir.exists()) await dir.create(recursive: true);
-        return dir;
-      } catch (_) {}
-    }
-    final fallback = await getApplicationDocumentsDirectory();
-    final sub = Directory('${fallback.path}/Downloads');
-    if (!await sub.exists()) await sub.create(recursive: true);
-    return sub;
-  }
-
-  /// تنزيل مباشر وسريع لليوتيوب عبر youtube_explode_dart كخيار أول/بديل مضمون
+  /// تنزيل مباشر وسريع لليوتيوب في مجلد مؤقت ثم حفظه عبر MediaStore (لا يحتاج أي صلاحيات تخزين)
   Future<String> _downloadYouTubeDirect({
     required String url,
     required OsaidQuality quality,
@@ -163,19 +158,24 @@ class OsaidDownloaderService {
     } else {
       final muxed = manifest.muxed.sortByVideoQuality();
       if (muxed.isEmpty) {
-        throw Exception('لم يتم العثور على بث مدمج، سيتم استخدام المحرك المتقدم');
+        throw Exception('لم يتوفر بث مدمج');
       }
       streamInfo = muxed.last;
       ext = streamInfo.container.name;
     }
 
-    final dir = await _getDownloadDir();
-    final safeTitle = video.title.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_').trim();
-    final fileName = '${safeTitle.length > 70 ? safeTitle.substring(0, 70) : safeTitle}.$ext';
-    final file = File('${dir.path}/$fileName');
+    final tmpDir = await getTemporaryDirectory();
+    final safeTitle = video.title
+        .replaceAll(RegExp(r'[^\w\u0600-\u06FF\s-]'), '_')
+        .replaceAll(RegExp(r'\s+'), '_')
+        .trim();
+    final shortName = safeTitle.isEmpty
+        ? 'video_${DateTime.now().millisecondsSinceEpoch}'
+        : (safeTitle.length > 60 ? safeTitle.substring(0, 60) : safeTitle);
+    final tempFile = File('${tmpDir.path}/$shortName.$ext');
 
     final stream = _yt.videos.streamsClient.get(streamInfo);
-    final sink = file.openWrite();
+    final sink = tempFile.openWrite();
     final total = streamInfo.size.totalBytes;
     int received = 0;
 
@@ -193,18 +193,20 @@ class OsaidDownloaderService {
       await sink.close();
     }
 
+    onProgress(0.98, 'جاري الحفظ في المعرض...');
     if (Platform.isAndroid) {
+      final saved = await _bridgeChannel.invokeMethod<String>('saveToPublic', {'path': tempFile.path});
       try {
-        await _bridgeChannel.invokeMethod('scanFile', {'path': file.path});
+        await tempFile.delete();
       } catch (_) {}
+      return saved ?? tempFile.path;
     }
-
-    return file.path;
+    return tempFile.path;
   }
 
-  /// تنزيل ذكي مزدوج:
-  /// 1) لروابط يوتيوب: يجرب yt-dlp أولاً، وإن تعثر ينزل مباشرة عبر youtube_explode_dart المدمج
-  /// 2) لبقية المنصات (تيك توك، إنستغرام، فيسبوك، X، ساوندكلاود...): يعمل عبر yt-dlp + FFmpeg
+  /// تنزيل ذكي مزدوج لكل المنصات:
+  /// - يستخدم yt-dlp + FFmpeg (YouTube, TikTok, Instagram, Facebook, X, SoundCloud...)
+  /// - وإذا كان الرابط من يوتيوب وتعثر yt-dlp، يتحول فوراً للتحميل المباشر عبر youtube_explode_dart
   Future<String?> startDownload({
     required String id,
     required String url,

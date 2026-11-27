@@ -22,11 +22,14 @@ class _OsaidDownloaderScreenState extends State<OsaidDownloaderScreen> {
   String _activeTab = 'all';
   bool _isSearching = false;
   bool _isUpdatingEngine = false;
+  String _engineStatus = 'جاري فحص المحرك...';
+  bool _engineReady = false;
   StreamSubscription? _sub;
 
   @override
   void initState() {
     super.initState();
+    _loadEngineInfo();
     _sub = _downloader.progressStream.listen((event) {
       final id = event['id']?.toString();
       if (id == null) return;
@@ -37,6 +40,17 @@ class _OsaidDownloaderScreenState extends State<OsaidDownloaderScreen> {
         if (p >= 0) _tasks[idx].progress = (p / 100.0).clamp(0.0, 1.0);
         _tasks[idx].statusText = event['line']?.toString() ?? 'جاري التحميل...';
       });
+    });
+  }
+
+  Future<void> _loadEngineInfo() async {
+    final info = await _downloader.getEngineInfo();
+    if (!mounted) return;
+    setState(() {
+      _engineReady = info['ready'] == true;
+      _engineStatus = _engineReady
+          ? 'المحرك جاهز (yt-dlp ${info['version']})'
+          : 'حالة المحرك: ${info['version']}';
     });
   }
 
@@ -59,6 +73,7 @@ class _OsaidDownloaderScreenState extends State<OsaidDownloaderScreen> {
     setState(() => _isUpdatingEngine = true);
     try {
       final res = await _downloader.updateEngine();
+      await _loadEngineInfo();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('حالة تحديث محرك التحميل: $res')),
@@ -150,7 +165,7 @@ class _OsaidDownloaderScreenState extends State<OsaidDownloaderScreen> {
         task.status = DownloadStatus.completed;
         task.progress = 1.0;
         task.filePath = path;
-        task.statusText = 'مكتمل — حُفظ في Download/OsaidFile/Downloads';
+        task.statusText = 'مكتمل — حُفظ في ${path ?? "المعرض"}';
       });
     } catch (e) {
       if (!mounted) return;
@@ -206,6 +221,28 @@ class _OsaidDownloaderScreenState extends State<OsaidDownloaderScreen> {
               const Text(
                 'ابحث عن أي أغنية أو فيديو بالاسم (مثل طرب) أو الصق رابطاً من يوتيوب وتيك توك وإنستغرام وغيرها',
                 style: TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Icon(
+                    _engineReady ? Icons.check_circle_rounded : Icons.info_outline_rounded,
+                    size: 16,
+                    color: _engineReady ? AppTheme.accentEmerald : AppTheme.accentAmber,
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      _engineStatus,
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: _engineReady ? AppTheme.accentEmerald : AppTheme.accentAmber,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
               ),
               const SizedBox(height: 14),
               Row(
