@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:share_plus/share_plus.dart';
 import '../services/osaid_downloader_service.dart';
 import '../theme/app_theme.dart';
 
@@ -12,13 +13,15 @@ class OsaidDownloaderScreen extends StatefulWidget {
 }
 
 class _OsaidDownloaderScreenState extends State<OsaidDownloaderScreen> {
-  final _urlController = TextEditingController();
+  final _inputController = TextEditingController();
   final _downloader = OsaidDownloaderService();
   final List<OsaidDownloadTask> _tasks = [];
+  List<OsaidSearchResult> _searchResults = [];
 
   OsaidQuality _selectedQuality = OsaidQuality.bestMp4;
   String _activeTab = 'all';
-  bool _analyzing = false;
+  bool _isSearching = false;
+  bool _isUpdatingEngine = false;
   StreamSubscription? _sub;
 
   @override
@@ -29,8 +32,9 @@ class _OsaidDownloaderScreenState extends State<OsaidDownloaderScreen> {
       if (id == null) return;
       final idx = _tasks.indexWhere((t) => t.id == id);
       if (idx == -1) return;
+      final p = (event['progress'] as num?)?.toDouble() ?? 0.0;
       setState(() {
-        _tasks[idx].progress = ((event['progress'] as num?)?.toDouble() ?? 0.0) / 100.0;
+        if (p >= 0) _tasks[idx].progress = (p / 100.0).clamp(0.0, 1.0);
         _tasks[idx].statusText = event['line']?.toString() ?? 'جاري التحميل...';
       });
     });
@@ -39,51 +43,107 @@ class _OsaidDownloaderScreenState extends State<OsaidDownloaderScreen> {
   @override
   void dispose() {
     _sub?.cancel();
-    _urlController.dispose();
+    _inputController.dispose();
     super.dispose();
   }
 
-  Future<void> _pasteUrl() async {
+  Future<void> _pasteInput() async {
     final data = await Clipboard.getData(Clipboard.kTextPlain);
     if (data?.text != null && data!.text!.trim().isNotEmpty) {
-      setState(() => _urlController.text = data.text!.trim());
+      setState(() => _inputController.text = data.text!.trim());
     }
   }
 
-  Future<void> _startDownload() async {
-    final url = _urlController.text.trim();
-    if (url.isEmpty) return;
+  Future<void> _updateEngine() async {
+    if (_isUpdatingEngine) return;
+    setState(() => _isUpdatingEngine = true);
+    try {
+      final res = await _downloader.updateEngine();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('حالة تحديث محرك التحميل: $res')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('تعذر التحديث: $e')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isUpdatingEngine = false);
+    }
+  }
 
+  Future<void> _handleAction() async {
+    final text = _inputController.text.trim();
+    if (text.isEmpty) return;
+
+    if (_downloader.isUrl(text)) {
+      await _enqueueDownload(url: text, quality: _selectedQuality);
+      _inputController.clear();
+    } else {
+      setState(() {
+        _isSearching = true;
+        _searchResults = [];
+      });
+      try {
+        final results = await _downloader.search(text);
+        if (mounted) setState(() => _searchResults = results);
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('تعذر البحث: $e')),
+          );
+        }
+      } finally {
+        if (mounted) setState(() => _isSearching = false);
+      }
+    }
+  }
+
+  Future<void> _enqueueDownload({
+    required String url,
+    required OsaidQuality quality,
+    String? knownTitle,
+  }) async {
     final id = DateTime.now().millisecondsSinceEpoch.toString();
     final task = OsaidDownloadTask(
       id: id,
       url: url,
-      quality: _selectedQuality,
+      title: knownTitle ?? 'جاري التحليل...',
+      quality: quality,
       status: DownloadStatus.downloading,
-      statusText: 'جاري التحليل...',
+      statusText: 'جاري البدء...',
     );
 
     setState(() {
       _tasks.insert(0, task);
-      _urlController.clear();
-      _analyzing = true;
     });
 
-    final info = await _downloader.analyzeUrl(url);
-    if (mounted) {
-      setState(() {
-        _analyzing = false;
-        task.title = info['title']?.toString() ?? url;
-        task.site = info['site']?.toString() ?? '';
-        task.statusText = 'جاري التحميل...';
-      });
+    if (knownTitle == null) {
+      final info = await _downloader.analyzeUrl(url);
+      if (mounted) {
+        setState(() {
+          task.title = info['title']?.toString() ?? url;
+          task.site = info['site']?.toString() ?? '';
+          task.statusText = 'جاري التحميل...';
+        });
+      }
     }
 
     try {
       final path = await _downloader.startDownload(
         id: id,
         url: url,
-        quality: task.quality,
+        quality: quality,
+        onDirectProgress: (pct, status) {
+          if (!mounted) return;
+          setState(() {
+            task.progress = pct.clamp(0.0, 1.0);
+            task.statusText = status;
+          });
+        },
       );
       if (!mounted) return;
       setState(() {
@@ -121,21 +181,30 @@ class _OsaidDownloaderScreenState extends State<OsaidDownloaderScreen> {
       padding: const EdgeInsets.all(20),
       children: [
         GlassCard(
-          borderColor: AppTheme.accentEmerald.withOpacity(0.3),
+          borderColor: AppTheme.accentEmerald.withOpacity(0.35),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Row(
+              Row(
                 children: [
-                  Icon(Icons.cloud_download_rounded, color: AppTheme.accentEmerald, size: 28),
-                  SizedBox(width: 10),
-                  Text('محمّل أسيد — Osaid Downloader',
-                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                  const Icon(Icons.cloud_download_rounded, color: AppTheme.accentEmerald, size: 28),
+                  const SizedBox(width: 10),
+                  const Expanded(
+                    child: Text('محمّل أسيد — Osaid Downloader',
+                        style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                  ),
+                  IconButton.filledTonal(
+                    onPressed: _isUpdatingEngine ? null : _updateEngine,
+                    icon: _isUpdatingEngine
+                        ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                        : const Icon(Icons.system_update_alt_rounded, size: 20),
+                    tooltip: 'تحديث محرك التحميل من GitHub',
+                  ),
                 ],
               ),
               const SizedBox(height: 6),
               const Text(
-                'تحميل الفيديوهات والصور والصوتيات بنفس جودات برنامج الويندوز',
+                'ابحث عن أي أغنية أو فيديو بالاسم (مثل طرب) أو الصق رابطاً من يوتيوب وتيك توك وإنستغرام وغيرها',
                 style: TextStyle(fontSize: 12, color: AppTheme.textSecondary),
               ),
               const SizedBox(height: 14),
@@ -143,9 +212,10 @@ class _OsaidDownloaderScreenState extends State<OsaidDownloaderScreen> {
                 children: [
                   Expanded(
                     child: TextField(
-                      controller: _urlController,
+                      controller: _inputController,
+                      onSubmitted: (_) => _handleAction(),
                       decoration: InputDecoration(
-                        hintText: 'الصق رابط الفيديو أو الصورة هنا...',
+                        hintText: 'اكتب اسم أغنية/فيديو أو الصق رابطاً...',
                         filled: true,
                         fillColor: Colors.black.withOpacity(0.28),
                         border: OutlineInputBorder(
@@ -157,7 +227,7 @@ class _OsaidDownloaderScreenState extends State<OsaidDownloaderScreen> {
                   ),
                   const SizedBox(width: 8),
                   IconButton.filledTonal(
-                    onPressed: _pasteUrl,
+                    onPressed: _pasteInput,
                     icon: const Icon(Icons.content_paste_rounded),
                     tooltip: 'لصق',
                   ),
@@ -191,14 +261,16 @@ class _OsaidDownloaderScreenState extends State<OsaidDownloaderScreen> {
                   SizedBox(
                     height: 48,
                     child: FilledButton.icon(
-                      onPressed: _analyzing ? null : _startDownload,
+                      onPressed: _isSearching ? null : _handleAction,
                       style: FilledButton.styleFrom(
                         backgroundColor: AppTheme.accentEmerald,
                         foregroundColor: Colors.black,
                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
                       ),
-                      icon: const Icon(Icons.download_rounded),
-                      label: const Text('تحميل', style: TextStyle(fontWeight: FontWeight.bold)),
+                      icon: _isSearching
+                          ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                          : const Icon(Icons.search_rounded),
+                      label: const Text('بحث / تحميل', style: TextStyle(fontWeight: FontWeight.bold)),
                     ),
                   ),
                 ],
@@ -206,6 +278,83 @@ class _OsaidDownloaderScreenState extends State<OsaidDownloaderScreen> {
             ],
           ),
         ),
+        if (_searchResults.isNotEmpty) ...[
+          const SizedBox(height: 18),
+          Row(
+            children: [
+              const Expanded(
+                child: Text('نتائج البحث', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+              ),
+              TextButton(
+                onPressed: () => setState(() => _searchResults = []),
+                child: const Text('إخفاء'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          ..._searchResults.map(
+            (r) => Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: GlassCard(
+                padding: const EdgeInsets.all(12),
+                child: Row(
+                  children: [
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(10),
+                      child: Image.network(
+                        r.thumbnailUrl,
+                        width: 92,
+                        height: 62,
+                        fit: BoxFit.cover,
+                        errorBuilder: (_, __, ___) => Container(
+                          width: 92,
+                          height: 62,
+                          color: Colors.black26,
+                          child: const Icon(Icons.music_note_rounded),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(r.title, maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                          const SizedBox(height: 4),
+                          Text('${r.author} • ${r.duration}', style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+                          const SizedBox(height: 8),
+                          Row(
+                            children: [
+                              FilledButton.tonalIcon(
+                                onPressed: () => _enqueueDownload(
+                                  url: r.url,
+                                  quality: OsaidQuality.mp3,
+                                  knownTitle: r.title,
+                                ),
+                                icon: const Icon(Icons.music_note_rounded, size: 16),
+                                label: const Text('صوت', style: TextStyle(fontSize: 12)),
+                              ),
+                              const SizedBox(width: 8),
+                              FilledButton.tonalIcon(
+                                onPressed: () => _enqueueDownload(
+                                  url: r.url,
+                                  quality: _selectedQuality.isAudioOnly ? OsaidQuality.bestMp4 : _selectedQuality,
+                                  knownTitle: r.title,
+                                ),
+                                icon: const Icon(Icons.videocam_rounded, size: 16),
+                                label: const Text('فيديو', style: TextStyle(fontSize: 12)),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ],
         const SizedBox(height: 16),
         SingleChildScrollView(
           scrollDirection: Axis.horizontal,
@@ -247,6 +396,12 @@ class _OsaidDownloaderScreenState extends State<OsaidDownloaderScreen> {
                               overflow: TextOverflow.ellipsis,
                               style: const TextStyle(fontWeight: FontWeight.bold)),
                         ),
+                        if (t.status == DownloadStatus.completed && t.filePath != null)
+                          IconButton(
+                            icon: const Icon(Icons.share_rounded, color: AppTheme.accentCyan),
+                            onPressed: () => Share.shareXFiles([XFile(t.filePath!)]),
+                            tooltip: 'مشاركة / فتح',
+                          ),
                         if (t.status == DownloadStatus.downloading)
                           IconButton(
                             icon: const Icon(Icons.close_rounded, color: AppTheme.accentRose),

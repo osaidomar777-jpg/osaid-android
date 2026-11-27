@@ -28,14 +28,27 @@ class MainActivity : FlutterActivity() {
     private var eventSink: EventChannel.EventSink? = null
     @Volatile
     private var initialized = false
+    @Volatile
+    private var updatedOnce = false
 
     private fun ensureInit() {
-        if (initialized) return
-        synchronized(this) {
-            if (initialized) return
-            YoutubeDL.getInstance().init(applicationContext)
-            FFmpeg.getInstance().init(applicationContext)
-            initialized = true
+        if (!initialized) {
+            synchronized(this) {
+                if (!initialized) {
+                    YoutubeDL.getInstance().init(applicationContext)
+                    FFmpeg.getInstance().init(applicationContext)
+                    initialized = true
+                }
+            }
+        }
+        if (!updatedOnce) {
+            updatedOnce = true
+            executor.execute {
+                try {
+                    YoutubeDL.getInstance().updateYoutubeDL(applicationContext, YoutubeDL.UpdateChannel.STABLE)
+                } catch (_: Exception) {
+                }
+            }
         }
     }
 
@@ -102,10 +115,25 @@ class MainActivity : FlutterActivity() {
                 }
             })
 
-        // قناة محمّل أسيد (Osaid Downloader)
+        // قناة محمّل أسيد (Osaid Downloader - yt-dlp + FFmpeg)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, DOWNLOADER_CHANNEL)
             .setMethodCallHandler { call, result ->
                 when (call.method) {
+                    "updateEngine" -> {
+                        executor.execute {
+                            try {
+                                ensureInit()
+                                val status = YoutubeDL.getInstance().updateYoutubeDL(
+                                    applicationContext,
+                                    YoutubeDL.UpdateChannel.STABLE
+                                )
+                                mainHandler.post { result.success(status?.name ?: "OK") }
+                            } catch (e: Exception) {
+                                mainHandler.post { result.error("UPDATE_ERR", e.message ?: "فشل التحديث", null) }
+                            }
+                        }
+                    }
+
                     "analyze" -> {
                         val url = call.argument<String>("url") ?: ""
                         executor.execute {
@@ -152,6 +180,7 @@ class MainActivity : FlutterActivity() {
                                 request.addOption("-o", "${outDir.absolutePath}/%(title).80s.%(ext)s")
                                 request.addOption("--no-mtime")
                                 request.addOption("--no-playlist")
+                                request.addOption("--no-check-certificates")
 
                                 when (quality) {
                                     "2160" -> {
@@ -208,7 +237,6 @@ class MainActivity : FlutterActivity() {
                                     }
                                 }
 
-                                // فهرسة الملفات الجديدة ليراها المعرض و MTP فوراً
                                 val afterFiles = outDir.listFiles() ?: emptyArray()
                                 var savedFile: String? = null
                                 for (f in afterFiles) {
