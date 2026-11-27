@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
+import 'package:flutter/services.dart';
 import 'package:gal/gal.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -39,16 +40,19 @@ class UsbBridgeScanResult {
   final List<BridgeTextFile> texts;
   final int outboxCount;
   final String inboxPath;
+  final bool hasStoragePermission;
 
   UsbBridgeScanResult({
     required this.media,
     required this.texts,
     required this.outboxCount,
     required this.inboxPath,
+    required this.hasStoragePermission,
   });
 }
 
 class UsbBridgeService {
+  static const _bridgeChannel = MethodChannel('com.osaid.file/bridge');
   static const _fingerprintKey = 'osaid.imported.fingerprints';
   static const _imageExts = {
     'heic', 'heif', 'jpg', 'jpeg', 'png', 'gif', 'tif', 'tiff', 'webp', 'bmp'
@@ -58,9 +62,32 @@ class UsbBridgeService {
     'txt', 'md', 'csv', 'json', 'log', 'xml', 'yml', 'yaml', 'ini', 'html', 'htm', 'rtf'
   };
 
-  /// تحديد مجلد الجسر عبر USB:
-  /// - على iOS/iPadOS: مجلد Documents (نفس مسار OsaidBridge الذي يكتب فيه ويندوز عبر AFC/HouseArrest)
-  /// - على Android: /storage/emulated/0/Download/OsaidFile (أو مجلد التطبيق الخارجي كبديل)
+  Future<bool> hasAllFilesPermission() async {
+    if (!Platform.isAndroid) return true;
+    try {
+      return await _bridgeChannel.invokeMethod<bool>('hasAllFilesPermission') ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<void> openAllFilesPermission() async {
+    if (!Platform.isAndroid) return;
+    try {
+      await _bridgeChannel.invokeMethod('openAllFilesPermission');
+    } catch (_) {}
+  }
+
+  Future<void> scanMediaFile(String path) async {
+    if (!Platform.isAndroid) return;
+    try {
+      await _bridgeChannel.invokeMethod('scanFile', {'path': path});
+    } catch (_) {}
+  }
+
+  /// المجلد المشترك الذي يقرأه برنامج Osaid File على ويندوز عبر USB MTP:
+  /// Android: /storage/emulated/0/Download/OsaidFile
+  /// iOS/iPadOS: Documents
   Future<Directory> getBridgeRootDirectory() async {
     if (Platform.isIOS) {
       return await getApplicationDocumentsDirectory();
@@ -93,8 +120,12 @@ class UsbBridgeService {
         Permission.photos,
         Permission.videos,
         Permission.storage,
-        Permission.manageExternalStorage,
       ].request();
+      final hasAll = await hasAllFilesPermission();
+      if (!hasAll) {
+        await openAllFilesPermission();
+        return false;
+      }
       return true;
     } else if (Platform.isIOS) {
       return await Gal.requestAccess(toAlbum: true);
@@ -103,31 +134,37 @@ class UsbBridgeService {
   }
 
   Future<UsbBridgeScanResult> scanInbox() async {
+    final hasPerm = await hasAllFilesPermission();
     final root = await getBridgeRootDirectory();
-    final outbox = await getOutboxDirectory();
+    await getOutboxDirectory();
 
     final media = <BridgeMediaItem>[];
     final texts = <BridgeTextFile>[];
     int outboxCount = 0;
 
     if (await root.exists()) {
-      await for (final entity in root.list(recursive: true, followLinks: false)) {
-        if (entity is! File) continue;
-        final path = entity.path;
-        if (path.contains('إلى الكمبيوتر')) {
-          outboxCount++;
-          continue;
+      try {
+        await for (final entity in root.list(recursive: true, followLinks: false)) {
+          if (entity is! File) continue;
+          final path = entity.path;
+          if (path.contains('إلى الكمبيوتر')) {
+            outboxCount++;
+            continue;
+          }
+          if (path.contains('/Downloads/')) {
+            continue;
+          }
+          final ext = path.split('.').last.toLowerCase();
+          final stat = await entity.stat();
+          if (_imageExts.contains(ext)) {
+            media.add(BridgeMediaItem(file: entity, kind: BridgeMediaKind.image, size: stat.size));
+          } else if (_videoExts.contains(ext)) {
+            media.add(BridgeMediaItem(file: entity, kind: BridgeMediaKind.video, size: stat.size));
+          } else if (_textExts.contains(ext)) {
+            texts.add(BridgeTextFile(file: entity, size: stat.size, modified: stat.modified));
+          }
         }
-        final ext = path.split('.').last.toLowerCase();
-        final stat = await entity.stat();
-        if (_imageExts.contains(ext)) {
-          media.add(BridgeMediaItem(file: entity, kind: BridgeMediaKind.image, size: stat.size));
-        } else if (_videoExts.contains(ext)) {
-          media.add(BridgeMediaItem(file: entity, kind: BridgeMediaKind.video, size: stat.size));
-        } else if (_textExts.contains(ext)) {
-          texts.add(BridgeTextFile(file: entity, size: stat.size, modified: stat.modified));
-        }
-      }
+      } catch (_) {}
     }
 
     texts.sort((a, b) => b.modified.compareTo(a.modified));
@@ -136,6 +173,7 @@ class UsbBridgeService {
       texts: texts,
       outboxCount: outboxCount,
       inboxPath: root.path,
+      hasStoragePermission: hasPerm,
     );
   }
 
@@ -201,12 +239,25 @@ class UsbBridgeService {
     return (imported, skipped, failed);
   }
 
+  /// إرسال نص إلى مجلد "إلى الكمبيوتر" وتحديث MediaScanner فوراً ليراه ويندوز عبر USB MTP
   Future<File> sendTextToComputer(String title, String content) async {
     final outbox = await getOutboxDirectory();
     final safeName = (title.trim().isEmpty ? 'نص_${DateTime.now().millisecondsSinceEpoch}' : title.trim())
         .replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
     final fileName = safeName.endsWith('.txt') ? safeName : '$safeName.txt';
     final file = File('${outbox.path}/$fileName');
-    return await file.writeAsString(content);
+    await file.writeAsString(content, flush: true);
+    await scanMediaFile(file.path);
+    return file;
+  }
+
+  /// إرسال أي ملف (صورة/فيديو/مستند) من الجوال إلى مجلد "إلى الكمبيوتر"
+  Future<File> sendFileToComputer(File source) async {
+    final outbox = await getOutboxDirectory();
+    final name = source.uri.pathSegments.last;
+    final dest = File('${outbox.path}/$name');
+    final copied = await source.copy(dest.path);
+    await scanMediaFile(copied.path);
+    return copied;
   }
 }

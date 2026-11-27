@@ -90,13 +90,13 @@ class _OsaidDownloaderScreenState extends State<OsaidDownloaderScreen> {
         task.status = DownloadStatus.completed;
         task.progress = 1.0;
         task.filePath = path;
-        task.statusText = 'مكتمل — تم الحفظ';
+        task.statusText = 'مكتمل — حُفظ في Download/OsaidFile/Downloads';
       });
     } catch (e) {
       if (!mounted) return;
       setState(() {
         task.status = DownloadStatus.failed;
-        task.statusText = 'فشل التحميل';
+        task.statusText = 'فشل: ${e.toString().replaceAll("PlatformException(", "").replaceAll(")", "")}';
       });
     }
   }

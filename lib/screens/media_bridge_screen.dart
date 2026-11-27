@@ -67,12 +67,53 @@ class _MediaBridgeScreenState extends State<MediaBridgeScreen> {
   @override
   Widget build(BuildContext context) {
     final media = widget.scanResult?.media ?? [];
+    final hasPerm = widget.scanResult?.hasStoragePermission ?? true;
     final imagesCount = media.where((e) => e.kind == BridgeMediaKind.image).length;
     final videosCount = media.where((e) => e.kind == BridgeMediaKind.video).length;
 
     return ListView(
       padding: const EdgeInsets.all(20),
       children: [
+        if (!hasPerm) ...[
+          GlassCard(
+            borderColor: AppTheme.accentAmber.withOpacity(0.55),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Row(
+                  children: [
+                    Icon(Icons.warning_amber_rounded, color: AppTheme.accentAmber, size: 26),
+                    SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        'صلاحية الوصول للملفات مطلوبة لربط USB',
+                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                const Text(
+                  'حتى يتعرف برنامج Osaid File على ويندوز على الصور والنصوص في Download/OsaidFile، يرجى تفعيل "السماح بالوصول إلى جميع الملفات".',
+                  style: TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+                ),
+                const SizedBox(height: 12),
+                FilledButton.icon(
+                  onPressed: () async {
+                    await widget.bridge.openAllFilesPermission();
+                  },
+                  style: FilledButton.styleFrom(
+                    backgroundColor: AppTheme.accentAmber,
+                    foregroundColor: Colors.black,
+                  ),
+                  icon: const Icon(Icons.folder_open_rounded),
+                  label: const Text('فتح إعدادات الصلاحية الآن', style: TextStyle(fontWeight: FontWeight.bold)),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 14),
+        ],
         GlassCard(
           borderColor: AppTheme.accentCyan.withOpacity(0.3),
           child: Column(
